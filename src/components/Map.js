@@ -1,7 +1,9 @@
 import React, { Component } from 'react';
-import ReactCursorPosition from 'react-cursor-position';
+
+import Box from './Box';
+
 import styled from 'styled-components';
-import helpers from '../helpers';
+import helpers, {clone} from '../helpers';
 
 
 const MapWrap = styled.div`
@@ -38,15 +40,8 @@ const MapContent = styled.div.attrs({
   width: ${props => props.size + 'px'};
 `;
 
-const MapContentInner = styled(ReactCursorPosition)`
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
 const MapGridWrap = styled.div`
+  transform-style: preserve-3d;
   position: absolute;
   top: 0;
   left: 0;
@@ -56,11 +51,47 @@ const MapGridWrap = styled.div`
 
 const MapGrid = (props) => {
   return (
-    <MapGridWrap>
+    <MapGridWrap {...props}>
       {props.children}
     </MapGridWrap>
   )
-}
+};
+
+const MapElementOptions = styled.div`
+  transform: rotateX(90deg) rotateY(${props => props.rotate ? -props.rotate + 'deg' : 0}) translateY(100px);
+  transform-origin: 0 100%;
+  border: 2px solid red;
+  opacity: 0;
+  position: absolute;
+  bottom: 100%;
+  left: 100%;
+  height: 20px;
+  width: 100px;
+`;
+
+const MapElementWrap = styled.div.attrs({
+    style: (props) => ({
+      top: `${props.x ? props.x + 'px' : 0}`,
+      left: `${props.y ? props.y + 'px' : 0}`
+    })
+  })`
+  transform-style: preserve-3d;
+  pointer-events: ${props => props.move === false ? 'auto' : 'none'};
+  position: absolute;
+
+  &:hover ${MapElementOptions} {
+    opacity: 1;
+  }
+`;
+
+const MapElement = (props) => {
+  return (
+    <MapElementWrap {...props}>
+      {/* <MapElementOptions rotate={props.rotate}/> */}
+      {props.children}
+    </MapElementWrap>
+  );
+};
 
 const MapSettings = styled.div`
   background-color: white;
@@ -72,78 +103,6 @@ const MapSettings = styled.div`
   z-index: 1;
 `;
 
-const MapBox = styled.div`
-  transform-style: preserve-3d;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100px;
-  width: 100px;
-`;
-
-const MapBoxBottom = styled.div`
-  border: 2px solid black;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
-const MapBoxTop = styled.div`
-  transform: translateZ(100px);
-  border: 2px solid black;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
-const MapBoxLeft = styled.div`
-  transform-origin: 0 0 0;
-  transform: rotateY(-90deg);
-  border: 2px solid black;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
-const MapBoxRight = styled.div`
-  transform-origin: 100% 0 0;
-  transform: rotateY(90deg);
-  border: 2px solid black;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
-const MapBoxFront = styled.div`
-  transform-origin: 0 100% 0;
-  transform: rotateX(-90deg);
-  border: 2px solid black;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
-const MapBoxBack = styled.div`
-  transform-origin: 0 0 0;
-  transform: rotateX(90deg);
-  border: 2px solid black;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-`;
-
 class Map extends Component {
   constructor(props) {
     super(props);
@@ -153,11 +112,17 @@ class Map extends Component {
       mouseDown: false,
       mouseMoveX: null,
       mouseMoveY: null,
+      mouseOffsetX: null,
+      mouseOffsetY: null,
       mouseRotateX: null,
       pressShift: false,
+      isElementMove: false,
+      mapElements: [],
       mapGrid: {
-        x: null,
-        y: null
+        relativeBox: {
+          x: null,
+          y: null
+        }
       },
       inputs: {
         perspective: {
@@ -198,14 +163,15 @@ class Map extends Component {
       }
     }
 
-    this.contentRef = React.createRef();
-
     this.handleInputChange = this.handleInputChange.bind(this);
     this.onMouseWheel = this.onMouseWheel.bind(this);
     this.onMouseDown = this.onMouseDown.bind(this);
     this.onMouseUp = this.onMouseUp.bind(this);
     this.onMouseMove = this.onMouseMove.bind(this);
-    this.onMapContentInnerMouseMove = this.onMapContentInnerMouseMove.bind(this);
+    this.onElementClick = this.onElementClick.bind(this);
+    this.addMapElement = this.addMapElement.bind(this);
+    this.onContainerMouseMove = this.onContainerMouseMove.bind(this);
+    this.onContainerClick = this.onContainerClick.bind(this);
   }
 
   handleInputChange(event) {
@@ -213,7 +179,7 @@ class Map extends Component {
     const value = target.type === 'checkbox' ? target.checked : target.value;
     const name = target.name;
 
-    this.setState((prevState, props) => {
+    this.setState(prevState => {
       let newState = prevState.inputs[name].value = value;
       return newState;
     });
@@ -224,7 +190,7 @@ class Map extends Component {
     const sign = helpers.getSign(delta);
     let value = +this.state.inputs.translateZ.value - 1000 * sign;
 
-    let inputs = Object.assign({}, this.state.inputs);
+    let inputs = clone(this.state.inputs);
     if (value >= this.state.inputs.translateZ.min && value <= this.state.inputs.translateZ.max) {
       inputs.translateZ.value = value;
       this.setState({inputs});
@@ -233,7 +199,13 @@ class Map extends Component {
 
   onMouseDown(event) {
     if (event.button === 0) {
-      this.setState({mouseDown: true, mouseMoveX: event.screenX, mouseMoveY: event.screenY, mouseRotateX: event.screenX});
+      this.setState({
+        isElementMove: false,
+        mouseDown: true,
+        mouseMoveX: event.screenX,
+        mouseMoveY: event.screenY,
+        mouseRotateX: event.screenX
+      });
     }
   }
 
@@ -244,7 +216,7 @@ class Map extends Component {
   }
 
   onMouseMove(event) {
-    let inputs = Object.assign({}, this.state.inputs);
+    let inputs = clone(this.state.inputs);
 
     if (this.state.mouseDown && !event.shiftKey) {
       let valueX;
@@ -276,20 +248,57 @@ class Map extends Component {
     }
   }
 
-  onMapContentInnerMouseMove(obj) {
-    if (!obj.isPositionOutside) {
-      this.setState((prevState, props) => {
-        let newState = Object.assign({}, this.state);
-        newState.mapGrid.x = prevState.canvasSize / obj.elementDimensions.width * obj.position.x;
-        newState.mapGrid.y = prevState.canvasSize / obj.elementDimensions.height * obj.position.y;
-
-        return newState;
-      });
+  onContainerClick() {
+    if (this.state.isElementMove !== false) {
+      this.setState({isElementMove: false});
     }
   }
 
+  onContainerMouseMove(event) {
+    if (this.state.isElementMove !== false) {
+      event.persist();
+      
+      const mapElements = clone(this.state.mapElements);
+      mapElements[this.state.isElementMove].x = event.nativeEvent.offsetY;
+      mapElements[this.state.isElementMove].y = event.nativeEvent.offsetX;
+      this.setState({mapElements})
+    }
+  }
+
+  onElementClick(index) {
+    this.setState({isElementMove: index});
+  }
+
+  createMapElement(x = 0, y = 0) {
+    let item = {};
+    item.x = x;
+    item.y = y;
+    item.width = 100;
+    item.height = 100;
+
+    return item;
+  }
+
+  addMapElement() {
+    let mapElements = clone(this.state.mapElements);
+    let item = this.createMapElement();
+    mapElements.push(item);
+    this.setState({mapElements});
+  }
+
+  stressTest() {
+    let mapElements = [];
+    const size = 100;
+    for(let i = 0; i < this.state.canvasSize / size; i++) {
+      for(let j = 0; j < this.state.canvasSize / size; j++) {
+        mapElements.push(this.createMapElement(j * size, i * size));
+      }
+    }
+    this.setState({mapElements});
+  }
+
   render() {
-    const {inputs, mapGrid} = this.state;
+    const {inputs, mapGrid, mapElements, isElementMove} = this.state;
 
     const InputsElements = [];
     for (let key in inputs) {
@@ -299,7 +308,22 @@ class Map extends Component {
           <input {...inputs[key]} onChange={this.handleInputChange}/>
         </div>
       )
-    }
+    };
+    
+    const MapElements = [];
+    mapElements.forEach((item, index) => {
+      MapElements.push(
+        <MapElement
+          onClick={this.onElementClick.bind(this, index)}
+          rotate={inputs.rotateZ.value}
+          move={isElementMove}
+          key={index}
+          x={item.x}
+          y={item.y}>
+          <Box height={item.height} width={item.width} color={'red'}/>
+        </MapElement>
+      );
+    });
 
     return (
       <MapWrap
@@ -312,11 +336,16 @@ class Map extends Component {
           {InputsElements}
           <div>
             <div>
-              x: {mapGrid.x}
+              relativeBox
             </div>
             <div>
-              y: {mapGrid.y}
+              x: {mapGrid.relativeBox.x}
             </div>
+            <div>
+              y: {mapGrid.relativeBox.y}
+            </div>
+            <button onClick={this.addMapElement}>+</button>
+            <button onClick={(e) => this.stressTest(e)}>stressTest</button>
           </div>
         </MapSettings>
         <MapContainer perspective={`${this.state.inputs.perspective.value}px`}>
@@ -325,22 +354,12 @@ class Map extends Component {
             translateY={`${this.state.inputs.translateY.value}px`}
             translateZ={`${this.state.inputs.translateZ.value}px`}
             rotateZ={`${this.state.inputs.rotateZ.value}deg`}
-            onMouseMove={this.onContainerMouseMove}
-            innerRef={this.contentRef}
             size={this.state.canvasSize}>
-            <MapContentInner onPositionChanged={this.onMapContentInnerMouseMove}>
-              <MapGrid>
-                <MapBox>
-                  <MapBoxTop>2</MapBoxTop>
-                  <MapBoxBottom>1</MapBoxBottom>
-                  <MapBoxLeft>3</MapBoxLeft>
-                  <MapBoxRight>4</MapBoxRight>
-                  <MapBoxFront>5</MapBoxFront>
-                  <MapBoxBack>6</MapBoxBack>
-                </MapBox>
-              </MapGrid>
-            </MapContentInner>
-            {/* <Grid cells={mapGrid.cells} cellSize={mapGrid.cellSize}/> */}
+            <MapGrid
+              onMouseMove={this.onContainerMouseMove}
+              onClick={this.onContainerClick}>
+              {MapElements}
+            </MapGrid>
           </MapContent>
         </MapContainer>
       </MapWrap>
